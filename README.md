@@ -17,3 +17,17 @@ The analysis employed a two-fold approach. Firstly, customer data was meticulous
 - One Night Free Hotel with Flight: Optimization opportunities exist to further increase its adoption among qualified customers.
 - Exclusive Discounts: Targeted marketing towards specific customer groups can amplify the attractiveness of exclusive discounts.
 
+  ![alt text](https://github.com/Fitasdj/Customer-Segmentation/blob/main/Methode.png)
+  ![alt text](https://github.com/Fitasdj/Customer-Segmentation/blob/main/Fuzzy%20-%20K_mean.png)
+
+# Recommendations:
+- The Free Cancellation Fee: This perk garnered the highest interest among customers, and highlighting the flexibility and peace of mind it offers could be a strong selling point
+  
+- Emphasize Free Hotel Meal and Checked Bag: These perks also had significant interest. Consider building these together of featuring them prominently in marketing materials.
+  
+- Optimize Night Free Hotel with Flight: While this perk had a decent number of qualified customers, there might be room for optimization. Consider tailoring this offer to specific demographics or destinations.
+  
+- Targeted Marketing for Exclusive Discounts: Flight and hotel exclusive discounts attracted a smaller segment. Consider targeting specific customer groups, like frequent travelers or those seeking luxury experiences.
+  
+- Regularly Evaluate and Adjust Perks: Customer preferences may change over time. Regularly collect feedback and monitor perk performance to ensure offerings remain aligned with customer needs
+
