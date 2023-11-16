@@ -1,0 +1,574 @@
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Thresholding & Categorization :
+
+--This SQL query combines various subqueries to generate a comprehensive dataset 
+     with calculated metrics and statistics for user attributes related to travel.
+    The query covers user demographics, spending behavior, distance flown, and various 
+    perks like free hotel meals, checked bags, and cancellations.
+
+SELECT   user_id,
+         gender,
+         age,
+         CASE
+         WHEN age BETWEEN 18 AND 34 THEN '18-34'
+         WHEN age BETWEEN 35 AND 54 THEN '35-54'
+         ELSE '+55'
+         END AS age_segment,
+         married,
+         has_children,
+         CASE WHEN has_children = 'true' THEN 'Adults_with_children'
+         WHEN has_children = 'false'  THEN 'Adults_without_children'
+         END AS children_segment,
+         distance_flown,
+         home_country,
+         home_city, 
+         hotel_spending_scaled,
+         flight_spending_scaled,
+         free_hotel_meal_metric,
+         free_hotel_meal_decile,
+         CASE WHEN free_hotel_meal_decile > 5 THEN 'qualified' ELSE 'not qualified' END AS free_hotel_meal_perk,
+         free_checked_bag_metric,
+         free_checked_bag_decile,
+         CASE WHEN free_checked_bag_decile > 5 THEN 'qualified' ELSE 'not qualified' END AS free_checked_bag_perk,
+         free_cancellation_metric,
+         free_cancellation_decile,
+         CASE WHEN free_cancellation_decile > 5 THEN 'qualified' ELSE 'not qualified' END AS free_cancellation_perk,
+         night_hotel_free,
+         night_hotel_decile,
+         CASE WHEN night_hotel_decile > 5 THEN 'qualified' ELSE 'not qualified' END AS free_hotel_night_perk,
+         hotel_bargin_index,
+         hotel_bargin_index_decile,
+         CASE WHEN hotel_bargin_index_decile > 5 THEN 'qualified' ELSE 'not qualified' END AS hotel_exclusive_discount,
+         flight_bargin_index,
+         flight_bargin_index_decile,
+         CASE WHEN flight_bargin_index_decile > 5 THEN 'qualified' ELSE 'not qualified' END AS flight_exclusive_discount
+
+FROM (
+
+-- We applied the NTILE(10) built-in function with all below metric calculations for purpose to assin customers into deciles so it facilitates segmentation. 
+--q1 query generate customer demographic data combined with the spending behavioral metrics (hotel-flight ) spending.The metrics are scaled using the MINMAX approach.
+-- We filtered based on the empirical rule by applying the built-in function ABS in order to get rid of outliers after observing normal distribution for both metrics ( refer to Python file for distribution visualization ). 
+
+
+WITH q1 AS (
+WITH j AS (
+SELECT u.user_id,
+       gender,
+       EXTRACT(YEAR FROM AGE(NOW(), birthdate)) - CASE
+       WHEN EXTRACT(MONTH FROM birthdate) > EXTRACT(MONTH FROM NOW()) OR
+       (EXTRACT(MONTH FROM birthdate) = EXTRACT(MONTH FROM NOW()) AND EXTRACT(DAY FROM birthdate) > EXTRACT(DAY FROM NOW()))
+       THEN 1
+       ELSE 0
+       END AS age,
+       married,
+       has_children,
+       home_country,
+       home_city,
+       ROUND(SUM(haversine_distance(home_airport_lat,home_airport_lon,destination_airport_lat,destination_airport_lon))::numeric,2) AS distance_flown,
+       ROUND((AVG(hotel_per_room_usd)),2) AS hotel_spending,
+       ROUND((AVG(base_fare_usd)),2) AS flight_spending
+FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id
+WHERE session_start > '2023-01-04'
+GROUP BY u.user_id
+HAVING COUNT(s.*) > 7),
+
+k AS (
+  SELECT AVG(hotel_spending) AS avg_hotel_spending,
+         AVG(flight_spending) AS avg_flight_spending,
+         STDDEV(hotel_spending) AS std_hotel_spending,
+         STDDEV(flight_spending) AS std_flight_spending
+  FROM j),
+ 
+m AS (
+  SELECT MAX(hotel_spending) AS max_hs,
+         MIN(hotel_spending) AS min_hs,
+         MAX(flight_spending) AS max_fs,
+         MIN(flight_spending) AS min_fs
+   FROM j)
+   
+SELECT user_id,
+       gender,
+       age,
+       married,
+       has_children,
+       distance_flown,
+       home_country,
+       home_city, 
+       hotel_spending,
+       flight_spending,
+       ROUND(((hotel_spending - m.min_hs) / (m.max_hs - m.min_hs)),2) AS hotel_spending_scaled,
+       ROUND(((flight_spending - m.min_fs) / (m.max_fs - m.min_fs)),2) AS flight_spending_scaled
+       
+FROM j
+CROSS JOIN k
+CROSS JOIN m
+WHERE  ABS((hotel_spending - k.avg_hotel_spending) / std_hotel_spending) <= 3  --Built-in function to apply the empirical rule and eliminate outliers 
+AND ABS((flight_spending - k.avg_flight_spending) / std_flight_spending) <= 3 ),
+
+--q2 calculate the affinity metric for customers that potentially qualify for free hotel meal perk by taking the product of average hotel_per_room_usd with number of rooms booked for each customers divided by the average number of nights a customer had spent with scaling and applying empirical rule to avoid outliers.
+ 
+q2 AS (
+WITH o AS (  
+SELECT u.user_id, 
+       AVG(rooms) AS metric1,
+       ROUND ((AVG(hotel_per_room_usd)),2) AS metric2,
+       ROUND((AVG(nights)),2) AS metric3
+            
+FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id
+WHERE session_start > '2023-01-04'
+GROUP BY u.user_id
+HAVING COUNT(*) > 7
+AND AVG(nights) != 0 ),
+p AS( 
+  SELECT MAX(metric2) AS max_hr,
+         MIN(metric2) AS min_hr
+  FROM o),
+s AS (
+  SELECT AVG(metric2) AS metric2_mean,
+         STDDEV(metric2) AS metric2_stdv
+  FROM o)
+  
+  SELECT user_id,
+         metric2,
+         ROUND(((metric2 - p. min_hr) / (max_hr - min_hr)),2) AS hotel_per_room_scaled,
+         ROUND((((metric2 - p. min_hr) / (max_hr - min_hr))*metric1) / metric3,2) AS free_hotel_meal_metric,
+         NTILE(10) OVER (ORDER BY ROUND((((metric2 - p. min_hr) / (max_hr - min_hr))*metric1) / metric3,2)) AS free_hotel_meal_decile
+         
+  FROM o
+  CROSS JOIN p
+  CROSS JOIN s
+  WHERE  ABS((metric2 - s.metric2_mean) / metric2_stdv) <= 3 ),
+  
+ -----------------q3 the metric calculate number of flight trips a customer took in order to assign free checked bags perks to customers who fly often--------------------------------------
+  
+  q3 AS (
+WITH b AS (    
+    SELECT u.user_id,
+           ROUND((COUNT(f.trip_id)),2) AS free_checked_bags_metric       
+FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id
+WHERE session_start > '2023-01-04'
+GROUP BY u.user_id
+HAVING COUNT(*) > 7
+AND ROUND(COUNT(f.trip_id),2) != 0),
+
+n AS (
+  SELECT MAX(free_checked_bags_metric) AS max_fcbm,
+         MIN(free_checked_bags_metric) AS min_fcbm
+  FROM b )
+ SELECT user_id,
+        ROUND(((free_checked_bags_metric- n.min_fcbm) / (n.max_fcbm - n.min_fcbm )),2) AS free_checked_bag_metric,
+        NTILE(10) OVER (ORDER BY ROUND(((free_checked_bags_metric- n.min_fcbm) / (n.max_fcbm - n.min_fcbm )),2)) AS free_checked_bag_decile
+    FROM b
+    CROSS JOIN n),
+    
+-- q4 calculate the average number of page clicks per session in order to assign free cancellation perk to customers who tend to click more assuming that it will increase their booking rate --and decrease their number of clicks 
+  
+q4 AS (
+  WITH w AS (
+  SELECT u.user_id,
+         ROUND((AVG(page_clicks) / COUNT(session_id)),2) AS free_cancellation
+         
+FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id     
+WHERE session_start > '2023-01-04 '
+GROUP BY u.user_id
+HAVING COUNT(*) > 7),
+ y AS (
+   SELECT MAX(free_cancellation) AS max_fc,
+          MIN (free_cancellation) AS min_fc
+   FROM w)
+  
+  SELECT   user_id,
+           ROUND(((free_cancellation - y.min_fc) / (y.max_fc - y.min_fc)),2) AS free_cancellation_metric,
+           NTILE(10) OVER (ORDER BY ROUND(((free_cancellation - y.min_fc) / (y.max_fc - y.min_fc)),2)) AS free_cancellation_decile
+  FROM w
+  CROSS join y),
+ 
+--q5 calculate the total fees spent on hotel and flights on both flight and hotel trips in order to assign free hotel night with flight perk to customers that spent more  
+  
+q5 AS (
+WITH v AS (  
+  SELECT u.user_id,
+       ROUND(((AVG(base_fare_usd)  + AVG(hotel_per_room_usd * rooms)) / ( COUNT(f.trip_id) + COUNT(h.trip_id))),2) AS total_expenditures  
+FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id    
+WHERE session_start > '2023-01-04 '
+GROUP BY u.user_id
+HAVING COUNT(*) > 7 
+AND COUNT(f.trip_id)  != 0
+AND COUNT(h.trip_id)  != 0),
+  
+z AS(
+  SELECT MAX(total_expenditures) AS max_te,
+         MIN(total_expenditures) AS min_te
+  FROM v)
+  
+SELECT user_id,
+       ROUND(((total_expenditures- z.min_te) / (z.max_te - z.min_te)),2) AS night_hotel_free,
+       NTILE(10) OVER (ORDER BY ROUND(((total_expenditures- z.min_te) / (z.max_te - z.min_te)),2)) AS night_hotel_decile
+FROM v
+CROSS JOIN z),
+ 
+-- q6 calculate hotel_bargin_index trying to segment customers according to their discounts and assign exclusive discounts to customers who poses a high index values  
+  
+q6 AS (
+  WITH d AS (
+SELECT u.user_id,
+       ROUND((AVG(hotel_discount_amount)),2) AS avg_hotel_discount,
+       ROUND((SUM(CASE WHEN hotel_discount = 'true' THEN 1 END)::NUMERIC/ COUNT(s.*)),2) AS hotel_discount_perc,
+       ROUND((AVG(hotel_discount_amount * hotel_per_room_usd*rooms)),2) avg_hotel_dollar_saved
+      
+FROM users u
+     LEFT JOIN sessions s
+     ON u.user_id = s.user_id
+     LEFT JOIN hotels h
+     ON s.trip_id = h.trip_id
+     LEFT JOIN flights f
+     ON s.trip_id = f.trip_id
+WHERE session_start > '2023-01-04 '
+GROUP BY u.user_id
+HAVING COUNT(*) > 7 
+AND ROUND((SUM(CASE WHEN hotel_discount = 'true' THEN 1 ELSE 0 END)::NUMERIC/ COUNT(s.*)),2) != 0
+AND ROUND((AVG(hotel_discount_amount * hotel_per_room_usd*rooms)),2) IS NOT NULL),
+
+
+m_m AS (
+
+SELECT  MIN(avg_hotel_dollar_saved) AS min_ads,
+        MAX(avg_hotel_dollar_saved) AS max_ads 
+FROM d)
+
+SELECT d.user_id,
+       ROUND((((d.avg_hotel_dollar_saved - m_m.min_ads) / (m_m.max_ads -m_m.min_ads)) *  (d.avg_hotel_discount * d.hotel_discount_perc)),3) AS hotel_bargin_index,
+       NTILE(10) OVER (ORDER BY ROUND((((d.avg_hotel_dollar_saved - m_m.min_ads) / (m_m.max_ads -m_m.min_ads)) *  (d.avg_hotel_discount * d.hotel_discount_perc)),3)) AS hotel_bargin_index_decile
+       
+FROM d
+CROSS JOIN m_m),
+
+-- q7 calculate flight_bargin_index trying to segment customers according to their discounts and assign exclusive discounts to customers who poses a high index values    
+  
+q7 AS (
+  WITH d AS (
+SELECT u.user_id,
+       gender,
+       ROUND((AVG(flight_discount_amount)),2) AS avg_flight_discount,
+       ROUND((SUM(CASE WHEN flight_discount = 'true' THEN 1 END)::NUMERIC/ COUNT(s.*)),2) AS flight_discount_perc,
+       ROUND((AVG(flight_discount_amount * base_fare_usd)),2) avg_dollar_saved,
+       ROUND((SUM(flight_discount_amount*base_fare_usd)/SUM(haversine_distance(home_airport_lat,home_airport_lon,destination_airport_lat,destination_airport_lon)))::NUMERIC,5) AS ADS_per_km 
+FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id    
+WHERE session_start > '2023-01-04 '
+GROUP BY u.user_id
+HAVING COUNT(*) > 7),
+
+m_m AS (
+
+SELECT  MIN(ads_per_km) AS min_ads,
+        MAX(ads_per_km) AS max_ads 
+FROM d)
+
+SELECT d.user_id,
+       ROUND((((d.ads_per_km - m_m.min_ads) / (m_m.max_ads -m_m.min_ads)) * (d.avg_flight_discount*d.flight_discount_perc)),5) flight_bargin_index,
+       NTILE(10) OVER (ORDER BY ROUND((((d.ads_per_km - m_m.min_ads) / (m_m.max_ads -m_m.min_ads)) * (d.avg_flight_discount*d.flight_discount_perc)),5)) AS flight_bargin_index_decile
+  
+  FROM d    
+CROSS JOIN m_m
+WHERE ROUND((((d.ads_per_km - m_m.min_ads) / (m_m.max_ads -m_m.min_ads)) * (d.avg_flight_discount*d.flight_discount_perc)),5) IS NOT NULL )
+
+-- The below query summ all the  previous ones and uses a left join in order to combine queries so q1 since it select customers wiyh no outliers
+  
+  SELECT q1.user_id,
+         gender,
+         age,
+         married,
+         has_children,
+         distance_flown,
+         home_country,
+         home_city, 
+         hotel_spending_scaled,
+         flight_spending_scaled,
+         free_hotel_meal_metric,
+         free_hotel_meal_decile,
+         free_checked_bag_metric,
+         free_checked_bag_decile,
+         free_cancellation_metric,
+         free_cancellation_decile,
+         night_hotel_free,
+         night_hotel_decile,
+         hotel_bargin_index,
+         hotel_bargin_index_decile,
+         flight_bargin_index,
+         flight_bargin_index_decile
+         
+   FROM q1
+   LEFT JOIN q2 ON q1.user_id = q2.user_id
+   LEFT JOIN q3 ON q1.user_id = q3.user_id
+   LEFT JOIN q4 ON q1.user_id = q4.user_id
+   LEFT JOIN q5 ON q1.user_id = q5.user_id 
+   LEFT JOIN q6 ON q1.user_id = q6.user_id
+   LEFT JOIN q7 ON q1.user_id = q7.user_id
+) sub
+  
+  
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Fuzzy Segmentation :
+
+
+--cohort query select customers not including outliers.
+
+WITH cohort AS (
+  WITH d AS (
+SELECT u.user_id,
+       gender,
+       EXTRACT(YEAR FROM AGE(NOW(), birthdate)) - CASE
+       WHEN EXTRACT(MONTH FROM birthdate) > EXTRACT(MONTH FROM NOW()) OR
+       (EXTRACT(MONTH FROM birthdate) = EXTRACT(MONTH FROM NOW()) AND EXTRACT(DAY FROM birthdate) > EXTRACT(DAY FROM NOW()))
+       THEN 1
+       ELSE 0
+       END AS age,
+       married,
+       has_children,
+       home_country,
+       home_city,
+       ROUND((AVG(hotel_per_room_usd)),2) AS hotel_spending,
+       ROUND((AVG(base_fare_usd)),2) AS flight_spending
+  FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id
+WHERE session_start > '2023-01-04'
+GROUP BY u.user_id
+HAVING COUNT(*) > 7),
+
+k AS (
+  SELECT AVG(hotel_spending) AS avg_hotel_spending,
+         AVG(flight_spending) AS avg_flight_spending,
+         STDDEV(hotel_spending) AS std_hotel_spending,
+         STDDEV(flight_spending) AS std_flight_spending
+  FROM d),
+  
+m AS (
+  SELECT MAX(hotel_spending) AS max_hs,
+         MIN(hotel_spending) AS min_hs,
+         MAX(flight_spending) AS max_fs,
+         MIN(flight_spending) AS min_fs
+   FROM d)
+   
+SELECT user_id,
+       gender,
+       age,
+       married,
+       has_children,
+       home_country,
+       home_city,
+       ROUND(((hotel_spending - m.min_hs) / (m.max_hs - m.min_hs)),2) AS hotel_spending_scaled,
+       ROUND(((flight_spending - m.min_fs) / (m.max_fs - m.min_fs)),2) AS flight_spending_scaled
+       
+FROM d
+CROSS JOIN k
+CROSS JOIN m
+WHERE  ABS((hotel_spending - k.avg_hotel_spending) / std_hotel_spending) <= 3
+AND ABS((flight_spending - k.avg_flight_spending) / std_flight_spending) <= 3 ),
+
+-- The below query rank customers according to their affinity metric that calculate the product of average hotel_per_room_usd with number of rooms booked for each customers divided by the --average number of nights
+
+  
+HotelExpenditureCTE AS (
+    SELECT u.user_id,   
+           ROUND((AVG(hotel_per_room_usd*rooms) / AVG(nights)),2) AS hotel_booking_expenditure,
+           DENSE_RANK() OVER (ORDER BY ROUND((AVG(hotel_per_room_usd) * AVG(rooms) / AVG(nights)),2) DESC)  AS free_hotel_meal
+    FROM users u
+         LEFT JOIN sessions s ON u.user_id = s.user_id
+         LEFT JOIN hotels h ON s.trip_id = h.trip_id
+         LEFT JOIN flights f ON s.trip_id = f.trip_id
+    WHERE session_start > '2023-01-04'
+    GROUP BY u.user_id
+    HAVING COUNT(*) > 7
+    AND ROUND(AVG(nights),2) != 0 
+),
+
+--thef ollowing metric rank customers by calculating number of flight trips a customer took in order to assign free checked bags perks to customers who fly often
+
+CheckedBagsCTE AS (
+    SELECT u.user_id,
+           ROUND((COUNT(f.trip_id)),2)  AS bags_per_flight ,
+           DENSE_RANK() OVER(ORDER BY ROUND((COUNT(f.trip_id)),2) DESC ) AS free_checked_bag
+    FROM users u
+         LEFT JOIN sessions s ON u.user_id = s.user_id
+         LEFT JOIN hotels h ON s.trip_id = h.trip_id
+         LEFT JOIN flights f ON s.trip_id = f.trip_id
+    WHERE session_start > '2023-01-04'
+    GROUP BY u.user_id
+    HAVING COUNT(*) > 7
+    AND ROUND(COUNT(f.trip_id),2) != 0
+),
+
+-- The query rank customers by calculating the average number of page clicks per session
+cancellation_fee AS(
+   SELECT u.user_id,
+          ROUND((AVG(page_clicks) / COUNT(session_id)),2) AS cancellation_per_session,
+          DENSE_RANK() OVER( ORDER BY  ROUND((AVG(page_clicks) / COUNT(session_id)),2) DESC) AS free_cancellation_fee
+FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id     
+WHERE session_start > '2023-01-04 '
+GROUP BY u.user_id
+HAVING COUNT(*) > 7
+--AND SUM(CASE WHEN cancellation = 'true' THEN 1 ELSE 0 END) != 0 
+),
+
+--  The below query rank customers by calculating the total fees spent on hotel and flights on both flight and hotel trips
+
+hotel_flight AS (
+  SELECT u.user_id,
+       ROUND(((AVG(base_fare_usd)  + AVG(hotel_per_room_usd * rooms)) / ( COUNT(f.trip_id) + COUNT(h.trip_id))),2) AS total_expenditures,
+       DENSE_RANK() OVER(ORDER BY ROUND(((AVG(base_fare_usd)  + AVG(hotel_per_room_usd * rooms)) / ( COUNT(f.trip_id) + COUNT(h.trip_id))),2) DESC ) AS night_free_hotel_with_flight
+FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id    
+WHERE session_start > '2023-01-04 '
+GROUP BY u.user_id
+HAVING COUNT(*) > 7 
+AND COUNT(f.trip_id)  != 0
+AND COUNT(h.trip_id)  != 0 ),
+
+-- The query rank customers by calculating flight_bargin_index
+
+exclusive_flight_discount AS (
+  WITH d AS (
+SELECT u.user_id,
+       ROUND((AVG(flight_discount_amount)),2) AS avg_flight_discount,
+       ROUND((SUM(CASE WHEN flight_discount = 'true' THEN 1  END)::NUMERIC/ COUNT(s.*)),2) AS flight_discount_perc,
+       ROUND((AVG(flight_discount_amount * base_fare_usd)),2) avg_dollar_saved,
+       ROUND((SUM(flight_discount_amount*base_fare_usd)/SUM(haversine_distance(home_airport_lat,home_airport_lon,destination_airport_lat,destination_airport_lon)))::NUMERIC,5) AS ADS_per_km 
+FROM users u
+     LEFT JOIN sessions s ON u.user_id = s.user_id
+     LEFT JOIN hotels h ON s.trip_id = h.trip_id
+     LEFT JOIN flights f ON s.trip_id = f.trip_id    
+WHERE session_start > '2023-01-04 '
+GROUP BY u.user_id
+HAVING COUNT(*) > 7 
+--AND ROUND((SUM(CASE WHEN flight_discount = 'true' THEN 1 ELSE 0 END)::NUMERIC/ COUNT(s.*)),2) != 0
+AND ROUND((AVG(flight_discount_amount * base_fare_usd)),2) IS NOT NULL
+ORDER BY 2 DESC ),
+
+m_m AS (
+
+SELECT  MIN(ads_per_km) AS min_ads,
+        MAX(ads_per_km) AS max_ads 
+FROM d)
+
+SELECT d.user_id,
+       ROUND((((d.ads_per_km - m_m.min_ads) / (m_m.max_ads -m_m.min_ads)) * (d.avg_flight_discount*d.flight_discount_perc)),4) flight_bargin_index,
+       DENSE_RANK() OVER(ORDER BY ROUND((((d.ads_per_km - m_m.min_ads) / (m_m.max_ads -m_m.min_ads)) * (d.avg_flight_discount*d.flight_discount_perc)),4) DESC) flight_exclusive_discount
+FROM d
+CROSS JOIN m_m),
+
+he query rank customers by calculating hotel_bargin_index
+
+exclusive_hotel_discount AS (
+  WITH d AS (
+SELECT u.user_id,
+       ROUND((AVG(hotel_discount_amount)),2) AS avg_hotel_discount,
+       ROUND((SUM(CASE WHEN hotel_discount = 'true' THEN 1 END)::NUMERIC/ COUNT(s.*)),2) AS hotel_discount_perc,
+       ROUND((AVG(hotel_discount_amount * hotel_per_room_usd*rooms)),2) avg_hotel_dollar_saved
+      
+FROM users u
+     LEFT JOIN sessions s
+     ON u.user_id = s.user_id
+     LEFT JOIN hotels h
+     ON s.trip_id = h.trip_id
+     LEFT JOIN flights f
+     ON s.trip_id = f.trip_id
+WHERE session_start > '2023-01-04 '
+GROUP BY u.user_id
+HAVING COUNT(*) > 7 
+--AND ROUND((SUM(CASE WHEN hotel_discount = 'true' THEN 1 ELSE 0 END)::NUMERIC/ COUNT(s.*)),2) != 0
+AND ROUND((AVG(hotel_discount_amount * hotel_per_room_usd*rooms)),2) IS NOT NULL
+ORDER BY 2 DESC ),
+
+m_m AS (
+
+SELECT  MIN(avg_hotel_dollar_saved) AS min_ads,
+        MAX(avg_hotel_dollar_saved) AS max_ads 
+FROM d)
+
+SELECT d.user_id,
+       ROUND((((d.avg_hotel_dollar_saved - m_m.min_ads) / (m_m.max_ads -m_m.min_ads)) *  (d.avg_hotel_discount * d.hotel_discount_perc)),3) AS hotel_bargin_index,
+       DENSE_RANK() OVER(ORDER BY ROUND((((d.avg_hotel_dollar_saved - m_m.min_ads) / (m_m.max_ads -m_m.min_ads)) *  (d.avg_hotel_discount * d.hotel_discount_perc)),3) DESC) hotel_exclusive_discount 
+FROM d
+CROSS JOIN m_m)
+
+--The final query combine the above queries with a left join to cohort query and demonstrate how customers are ranked in each perk metric calculated .
+-- We applied LEAST built-in function in order to select the min rank over the metrics which indicate the potential perk customer would qualify for.
+
+SELECT co.user_id,
+       co.gender,
+       co.age,
+       co.married,
+       co.has_children,
+       co.home_country,
+       co.home_city,
+       he.free_hotel_meal,
+       cb.free_checked_bag,
+       cf.free_cancellation_fee,
+       hf. night_free_hotel_with_flight,
+       efd.flight_exclusive_discount,
+       ehd.hotel_exclusive_discount,
+       LEAST( he.free_hotel_meal,
+       cb.free_checked_bag,
+       cf.free_cancellation_fee,
+       hf. night_free_hotel_with_flight,
+       efd.flight_exclusive_discount,
+       ehd.hotel_exclusive_discount) AS potential_perk
+FROM cohort co
+     LEFT JOIN HotelExpenditureCTE he ON co.user_id = he.user_id
+     LEFT JOIN CheckedBagsCTE cb ON co.user_id = cb.user_id
+     LEFT JOIN cancellation_fee cf ON co.user_id = cf.user_id
+     LEFT JOIN hotel_flight hf ON co.user_id = hf.user_id
+     LEFT JOIN exclusive_flight_discount efd ON co.user_id = efd.user_id
+     LEFT JOIN exclusive_hotel_discount ehd ON co.user_id = ehd.user_id
+WHERE  (he.free_hotel_meal IS NOT NULL
+OR   cb.free_checked_bag IS NOT NULL
+OR    cf.free_cancellation_fee IS NOT NULL
+OR    hf. night_free_hotel_with_flight IS NOT NULL
+OR    efd.flight_exclusive_discount IS NOT NULL
+OR    ehd.hotel_exclusive_discount IS NOT NULL)
+ORDER BY 14 ASC  ;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
