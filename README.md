@@ -16,6 +16,7 @@ The analysis employed a two-fold approach. Firstly, customer data was meticulous
 ## Report Links 
 - [Presentation](https://github.com/Fitasdj/Customer-Segmentation/blob/cd03ae2d2dd388c42b7fd5a6ca3d703acd15f6aa/Presentation%20Slide.pdf)
 - [Excutive Summary](https://github.com/Fitasdj/Customer-Segmentation/blob/553082135eaf675d1e0d006f70d9486b3f3fddfa/Executive%20Summary.pdf)
+- [Python Flie](https://github.com/Fitasdj/Customer-Segmentation/blob/0b8523ff00e57ce938731b82ab1fca7cd4ef0643/Python%20File.ipynb)
 
 
 ## Tableau Dashboard
